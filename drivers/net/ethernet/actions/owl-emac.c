@@ -21,10 +21,9 @@
 
 #include "owl-emac.h"
 
-#define DEFAULT_MSG_ENABLE (NETIF_MSG_DRV | NETIF_MSG_PROBE | NETIF_MSG_LINK)
-static int debug = -1;
-module_param(debug, int, 0);
-MODULE_PARM_DESC(debug, "Debug level (0=none,...,16=all)");
+#define OWL_EMAC_DEFAULT_MSG_ENABLE	(NETIF_MSG_DRV | \
+					 NETIF_MSG_PROBE | \
+					 NETIF_MSG_LINK)
 
 static u32 owl_emac_reg_read(struct owl_emac_priv *priv, u32 reg)
 {
@@ -1567,7 +1566,7 @@ static int owl_emac_probe(struct platform_device *pdev)
 
 	priv = netdev_priv(netdev);
 	priv->netdev = netdev;
-	priv->msg_enable = netif_msg_init(debug, DEFAULT_MSG_ENABLE);
+	priv->msg_enable = netif_msg_init(-1, OWL_EMAC_DEFAULT_MSG_ENABLE);
 
 	ret = of_get_phy_mode(dev->of_node, &priv->phy_mode);
 	if (ret) {
