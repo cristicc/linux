@@ -80,10 +80,12 @@
 	};
 
 	soc {
-		compatible = "simple-bus";
+		compatible = "actions,s500-soc", "simple-bus";
 		#address-cells = <1>;
 		#size-cells = <1>;
 		ranges;
+		actions,serial-number-addrs = <0x800>, /* S/N Low */
+					      <0x804>; /* S/N High */
 
 		scu: scu@b0020000 {
 			compatible = "arm,cortex-a9-scu";
