@@ -6,6 +6,8 @@
  * Copyright (c) 2021 Cristian Ciocaltea <cristian.ciocaltea@gmail.com>
  */
 
+#include <crypto/skcipher.h>
+
 #include <linux/circ_buf.h>
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
@@ -15,6 +17,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/reset.h>
+#include <linux/soc/actions/owl-serial-number.h>
 
 #include "owl-emac.h"
 
@@ -1380,6 +1383,73 @@ static int owl_emac_phy_init(struct net_device *netdev)
 	return 0;
 }
 
+/* Generate the MAC address based on the SoC serial number.
+ */
+static int owl_emac_generate_mac_addr(struct net_device *netdev)
+{
+	int ret = -ENXIO;
+
+#ifdef CONFIG_OWL_EMAC_GEN_STABLE_ADDR
+	const u8 key[] = { 1, 4, 13, 21, 59, 67, 69, 127 };
+	struct device *dev = netdev->dev.parent;
+	struct crypto_sync_skcipher *tfm;
+	struct scatterlist sg;
+	u8 enc_sn[sizeof(key)];
+	u64 sn;
+
+	SYNC_SKCIPHER_REQUEST_ON_STACK(req, tfm);
+
+	sn = ((u64)owl_get_soc_serial_high() << 32) | owl_get_soc_serial_low();
+	if (!sn)
+		return ret;
+
+	tfm = crypto_alloc_sync_skcipher("ecb(des)", 0, 0);
+	if (IS_ERR(tfm)) {
+		dev_err(dev, "failed to allocate cipher: %ld\n", PTR_ERR(tfm));
+		return PTR_ERR(tfm);
+	}
+
+	ret = crypto_sync_skcipher_setkey(tfm, key, sizeof(key));
+	if (ret) {
+		dev_err(dev, "failed to set cipher key: %d\n", ret);
+		goto err_free_tfm;
+	}
+
+	memcpy(enc_sn, &sn, sizeof(enc_sn));
+
+	sg_init_one(&sg, enc_sn, sizeof(enc_sn));
+	skcipher_request_set_sync_tfm(req, tfm);
+	skcipher_request_set_callback(req, 0, NULL, NULL);
+	skcipher_request_set_crypt(req, &sg, &sg, sizeof(enc_sn), NULL);
+
+	ret = crypto_skcipher_encrypt(req);
+	if (ret) {
+		dev_err(dev, "failed to encrypt S/N: %d\n", ret);
+		goto err_free_tfm;
+	}
+
+	/* WARNING: The original vendor driver uses a real OUI (F4:4E:FD)
+	 * in the generated addresses which raises concerns regarding the
+	 * assignment of MAC addresses in a controlled way.
+	 *
+	 * Hence, this driver breaks the compatibility with the vendor code
+	 * by setting the locally administered bit in byte 0 and replacing
+	 * bytes 1 & 2 with additional entries from enc_sn.
+	 */
+	netdev->dev_addr[0] = 0xF6;	 /* replaced 0xF4 */
+	netdev->dev_addr[1] = enc_sn[1]; /* replaced 0x4E */
+	netdev->dev_addr[2] = enc_sn[5]; /* replaced 0xFD */
+	netdev->dev_addr[3] = enc_sn[0];
+	netdev->dev_addr[4] = enc_sn[4];
+	netdev->dev_addr[5] = enc_sn[7];
+
+err_free_tfm:
+	crypto_free_sync_skcipher(tfm);
+#endif /* CONFIG_OWL_EMAC_GEN_STABLE_ADDR */
+
+	return ret;
+}
+
 static void owl_emac_get_mac_addr(struct net_device *netdev)
 {
 	struct device *dev = netdev->dev.parent;
@@ -1388,6 +1458,13 @@ static void owl_emac_get_mac_addr(struct net_device *netdev)
 	ret = eth_platform_get_mac_address(dev, netdev->dev_addr);
 	if (!ret && is_valid_ether_addr(netdev->dev_addr))
 		return;
+
+	ret = owl_emac_generate_mac_addr(netdev);
+	if (!ret && is_valid_ether_addr(netdev->dev_addr)) {
+		dev_info(dev, "using system S/N based MAC address %pM\n",
+			 netdev->dev_addr);
+		return;
+	}
 
 	eth_hw_addr_random(netdev);
 	dev_warn(dev, "using random MAC address %pM\n", netdev->dev_addr);
